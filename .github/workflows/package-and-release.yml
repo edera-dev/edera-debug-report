@@ -2,7 +2,7 @@ name: package-and-release
 
 on:
   push:
-    branches: ["**"]           # build on branches (artifacts only)
+    branches: ["main"]         # build on branches (artifacts only)
     tags:     ["*", "v*"]      # build + create Release on tag pushes
   workflow_dispatch:
 
