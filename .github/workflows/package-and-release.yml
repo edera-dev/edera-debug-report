@@ -1,0 +1,82 @@
+name: package-and-release
+
+on:
+  push:
+    branches: ["**"]           # build on branches (artifacts only)
+    tags:     ["*", "v*"]      # build + create Release on tag pushes
+  workflow_dispatch:
+
+permissions:
+  contents: write              # needed for creating Releases
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out (with tags & submodules)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0               # get full history so tags/describe work
+          submodules: recursive
+
+      - name: Install build dependencies (APT)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            make \
+            gcc \
+            git \
+            zlib1g-dev \
+            python3 \
+            python-is-python3
+          python --version
+          gcc --version
+          make --version
+
+      - name: Run package.sh
+        run: |
+          set -euo pipefail
+          chmod +x ./package.sh
+          ./package.sh
+          test -d out
+          shopt -s nullglob
+          files=(out/*.tar out/*.tar.* out/*.tgz out/*.tar.gz out/*.tar.zst)
+          ((${#files[@]} > 0)) || { echo "No tarball found in ./out"; exit 1; }
+          printf "Found artifacts:\n%s\n" "${files[@]}"
+
+      - name: Upload CI artifact(s)
+        if: ${{ success() && hashFiles('out/*.tar','out/*.tar.*','out/*.tgz','out/*.tar.gz','out/*.tar.zst') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-tarballs
+          path: |
+            out/*.tar
+            out/*.tar.*
+            out/*.tgz
+            out/*.tar.gz
+            out/*.tar.zst
+          if-no-files-found: error
+          retention-days: 14
+
+      # Create a GitHub Release (only on tag pushes), attach tarballs, and auto-generate notes
+      - name: Create Release and upload assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          # auto-generate commit summary since previous tag
+          generate_release_notes: true
+          files: |
+            out/*.tar
+            out/*.tar.*
+            out/*.tgz
+            out/*.tar.gz
+            out/*.tar.zst
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
