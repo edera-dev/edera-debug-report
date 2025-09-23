@@ -1,0 +1,100 @@
+name: build (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      upload_artifact:
+        type: boolean
+        required: false
+        default: false
+      artifact_name:
+        type: string
+        required: false
+        default: "package-tarballs"
+      package_script:
+        type: string
+        required: false
+        default: "./package.sh"
+    outputs:
+      artifact_name:
+        description: "Name of the uploaded artifact (if upload_artifact=true)"
+        value: ${{ jobs.build.outputs.artifact_name }}
+      tarball_glob:
+        description: "Glob for produced tarballs"
+        value: ${{ jobs.build.outputs.tarball_glob }}
+      tarball_names_json:
+        description: "JSON list of produced tarball paths"
+        value: ${{ jobs.build.outputs.tarball_names_json }}
+      tarball_count:
+        description: "Number of tarballs found"
+        value: ${{ jobs.build.outputs.tarball_count }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      tarball_glob:  ${{ steps.find.outputs.tarball_glob }}
+      tarball_names_json: ${{ steps.find.outputs.tarball_names_json }}
+      tarball_count: ${{ steps.find.outputs.tarball_count }}
+    steps:
+      - name: Checkout (with tags & submodules)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential make gcc zlib1g-dev \
+            python3 python-is-python3 tar zstd
+
+      - name: Run package script
+        run: |
+          set -euxo pipefail
+          chmod +x ${{ inputs.package_script }}
+          ${{ inputs.package_script }}
+          test -d out
+
+      - name: Locate tarballs
+        id: find
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(out/*.tar.gz)
+          (( ${#files[@]} > 0 )) || { echo "No out/*.tar.gz created"; exit 1; }
+
+          # JSON encode list using Python (avoids jq dependency)
+          json=$(python3 -c 'import glob,json; print(json.dumps(sorted(glob.glob("out/*.tar.gz"))))')
+
+          echo "tarball_names_json=${json}" >> "$GITHUB_OUTPUT"
+          echo "tarball_count=${#files[@]}" >> "$GITHUB_OUTPUT"
+          echo "tarball_glob=out/*.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Set outputs (artifact_name)
+        id: meta
+        run: echo "artifact_name=${{ inputs.artifact_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        if: ${{ inputs.upload_artifact }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: out/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: List packaged tarball(s)
+        if: ${{ !inputs.upload_artifact }}
+        run: |
+          set -euxo pipefail
+          for f in out/*.tar.gz; do
+            echo "::group::Listing $f"
+            tar -tzvf "$f

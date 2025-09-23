@@ -1,0 +1,53 @@
+name: Package and release
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["*", "v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    with:
+      python-version: "3.11"
+      paths: "debug_report.py"
+
+  build:
+    needs: lint
+    uses: ./.github/workflows/build.yml
+    with:
+      upload_artifact: true
+      artifact_name: "package-tarballs"
+      package_script: "./package.sh"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for changelog context if needed)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: out
+
+      - name: Create Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: ${{ needs.build.outputs.tarball_glob }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

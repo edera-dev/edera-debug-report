@@ -1,0 +1,28 @@
+name: Pull request checks (lint + build)
+
+on:
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    with:
+      python-version: "3.11"
+      paths: "debug_report.py"
+
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      upload_artifact: false
+      artifact_name: "package-tarballs"
+      package_script: "./package.sh"
+

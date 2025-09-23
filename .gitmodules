@@ -1,0 +1,3 @@
+[submodule "extern/pciutils"]
+	path = extern/pciutils
+	url = https://github.com/pciutils/pciutils.git

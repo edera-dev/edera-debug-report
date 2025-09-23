@@ -1,0 +1,49 @@
+name: black + mypy checks
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version for linters
+        required: false
+        type: string
+        default: "3.11"
+      paths:
+        description: Space-separated paths to check
+        required: false
+        type: string
+        default: "debug_report.py"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install linters
+        run: |
+          python -m pip install --upgrade pip
+          pip install "black==24.*" "mypy==1.*"
+
+      - name: black --check
+        run: |
+          black --version
+          # support multiple files if provided as a single space-separated string
+          black --check ${{ inputs.paths }}
+
+      - name: mypy
+        run: |
+          mypy --version
+          mypy --python-version ${{ inputs.python-version }} ${{ inputs.paths }}

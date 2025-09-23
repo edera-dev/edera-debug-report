@@ -20,8 +20,21 @@ import sys
 import tempfile
 import threading
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple, Iterable
+
+# --------------------------- config ---------------------------
+
+
+@dataclass
+class Config:
+    acpi: bool = True
+    dmi: bool = True
+    journal: bool = True
+    network: bool = True
+    systemctl: bool = True
+
 
 # ------------------------ env / basics ------------------------
 
@@ -52,6 +65,17 @@ def stable_env() -> dict:
     ):
         env[k] = "C.UTF-8"
     return env
+
+
+def set_environment() -> None:
+    scriptDir = os.path.dirname(os.path.abspath(__file__))
+
+    # Add ${scriptDir}/bin to PATH
+    bin_dir = os.path.join(scriptDir, "bin")
+    os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+
+    # Change working directory to script directory
+    os.chdir(scriptDir)
 
 
 # ------------------------ ZIP writer ------------------------
@@ -528,10 +552,16 @@ def collect_network(
             log, aw, f"{top_name}/net/iptables-save.txt", ["iptables-nft-save"]
         )
     else:
-        log.append("INFO: iptables-save not found (nft-only system?)")
+        log.append("INFO: iptables-save or iptables-nft-save not found")
 
     if which("ip6tables-save"):
         run_and_write(log, aw, f"{top_name}/net/ip6tables-save.txt", ["ip6tables-save"])
+    elif which("ip6tables-nft-save"):
+        run_and_write(
+            log, aw, f"{top_name}/net/ip6tables-save.txt", ["ip6tables-nft-save"]
+        )
+    else:
+        log.append("INFO: ip6tables-save or ip6tables-nft-save not found")
 
     # ip -j snapshots
     ip = which("ip")
@@ -632,6 +662,7 @@ def collect_network(
 
 
 def collect_all(
+    cfg: "Config",
     log: List[str],
     aw: ZipArchiveWriter,
     top_name: str,
@@ -652,35 +683,41 @@ def collect_all(
     run_and_write(log, aw, f"{top_name}/dmesg.txt", ["dmesg"])
 
     # journalctl (current boot) -> zstd -> STORED
-    if which("journalctl"):
-        use_zstd = bool(which("zstd"))
-        arc = (
-            f"{top_name}/systemd-journal-boot0.json.zst"
-            if use_zstd
-            else f"{top_name}/systemd-journal-boot0.json"
-        )
-        run_and_write(
-            log,
-            aw,
-            arc,
-            ["journalctl", "--system", "-b", "-0", "--output=json"],
-            pipe_zstd=use_zstd,
-            zstd_level=13,
-        )
+    if cfg.journal:
+        if which("journalctl"):
+            use_zstd = bool(which("zstd"))
+            arc = (
+                f"{top_name}/systemd-journal-boot0.json.zst"
+                if use_zstd
+                else f"{top_name}/systemd-journal-boot0.json"
+            )
+            run_and_write(
+                log,
+                aw,
+                arc,
+                ["journalctl", "--system", "-b", "-0", "--output=json"],
+                pipe_zstd=use_zstd,
+                zstd_level=13,
+            )
+        else:
+            log.append("FAIL: journalctl not found; skipping journal capture")
     else:
-        log.append("FAIL: journalctl not found; skipping journal capture")
+        log.append("SKIP: systemd journal skipped at user request")
 
     # systemctl list-units
-    if which("systemctl"):
-        arc = f"{top_name}/systemd-units.json"
-        run_and_write(
-            log,
-            aw,
-            arc,
-            ["systemctl", "--system", "list-units", "--output=json"],
-        )
+    if cfg.systemctl:
+        if which("systemctl"):
+            arc = f"{top_name}/systemd-units.json"
+            run_and_write(
+                log,
+                aw,
+                arc,
+                ["systemctl", "--system", "list-units", "--output=json"],
+            )
+        else:
+            log.append("FAIL: systemd not found; skipping unit list capture")
     else:
-        log.append("FAIL: systemd not found; skipping unit list capture")
+        log.append("SKIP: systemd unit state skipped at user request")
 
     # Xen dom0
     if detect_xen_dom0(log):
@@ -708,49 +745,58 @@ def collect_all(
         log.append("INFO: Xen dom0 not detected -> skipping 'xl'/'protect' collectors.")
 
     # dmidecode dump
-    dmidecode_bin = which("dmidecode")
-    if dmidecode_bin:
-        # full dmidecode text (stderr is used for warnings; capture sidecar)
-        run_and_write(log, aw, f"{top_name}/dmidecode.txt", [dmidecode_bin])
-        # dump-bin: needs a filename; use a temp file and add it
-        with tempfile.TemporaryDirectory(prefix="dbg-dmi-") as td:
-            tmp = Path(td) / "dmi.dump"
-            run_and_write(
-                log, aw, f"{top_name}/dmi-bin.txt", [dmidecode_bin, f"--dump-bin={tmp}"]
-            )
-            if tmp.exists():
-                copy_file(log, aw, tmp, f"{top_name}/dmi.dump", stored=False)
-            else:
-                blob = synthesize_dmidecode_dump(log)
-                if blob is not None:
-                    write_bytes(log, aw, f"{top_name}/dmi.dump", blob, stored=False)
-                    log.append("INFO: synthesized minimal dmi.dump from sysfs")
+    if cfg.dmi:
+        dmidecode_bin = which("dmidecode")
+        if dmidecode_bin:
+            # full dmidecode text (stderr is used for warnings; capture sidecar)
+            run_and_write(log, aw, f"{top_name}/dmidecode.txt", [dmidecode_bin])
+            # dump-bin: needs a filename; use a temp file and add it
+            with tempfile.TemporaryDirectory(prefix="dbg-dmi-") as td:
+                tmp = Path(td) / "dmi.dump"
+                run_and_write(
+                    log,
+                    aw,
+                    f"{top_name}/dmi-bin.txt",
+                    [dmidecode_bin, f"--dump-bin={tmp}"],
+                )
+                if tmp.exists():
+                    copy_file(log, aw, tmp, f"{top_name}/dmi.dump", stored=False)
                 else:
-                    log.append("FAIL: could not synthesize dmi.dump from sysfs")
-    else:
-        blob = synthesize_dmidecode_dump(log)
-        if blob is not None:
-            write_bytes(log, aw, f"{top_name}/dmi.dump", blob, stored=False)
-            log.append("INFO: dmidecode not present; synthesized minimal dmi.dump")
+                    blob = synthesize_dmidecode_dump(log)
+                    if blob is not None:
+                        write_bytes(log, aw, f"{top_name}/dmi.dump", blob, stored=False)
+                        log.append("INFO: synthesized minimal dmi.dump from sysfs")
+                    else:
+                        log.append("FAIL: could not synthesize dmi.dump from sysfs")
         else:
-            log.append(
-                "FAIL: dmidecode unavailable and synthesis failed (no EP in sysfs)."
-            )
+            blob = synthesize_dmidecode_dump(log)
+            if blob is not None:
+                write_bytes(log, aw, f"{top_name}/dmi.dump", blob, stored=False)
+                log.append("INFO: dmidecode not present; synthesized minimal dmi.dump")
+            else:
+                log.append(
+                    "FAIL: dmidecode unavailable and synthesis failed (no EP in sysfs)."
+                )
 
-    # Also copy raw sysfs DMI tables
-    sysdmi = Path("/sys/firmware/dmi/tables")
-    if sysdmi.is_dir():
-        copy_file_tree(log, aw, sysdmi, f"{top_name}/dmi")
+        # Also copy raw sysfs DMI tables
+        sysdmi = Path("/sys/firmware/dmi/tables")
+        if sysdmi.is_dir():
+            copy_file_tree(log, aw, sysdmi, f"{top_name}/dmi")
+        else:
+            log.append("FAIL: /sys/firmware/dmi/tables missing")
     else:
-        log.append("FAIL: /sys/firmware/dmi/tables missing")
+        log.append("SKIP: dmi information skipped at user request")
 
     # ACPI tables (including data/)
-    acpi_src = Path("/sys/firmware/acpi/tables")
-    if acpi_src.is_dir():
-        copy_file_tree(log, aw, acpi_src, f"{top_name}/acpi-tables", recursive=True)
-        log.append("INFO: copied ACPI tables")
+    if cfg.acpi:
+        acpi_src = Path("/sys/firmware/acpi/tables")
+        if acpi_src.is_dir():
+            copy_file_tree(log, aw, acpi_src, f"{top_name}/acpi-tables", recursive=True)
+            log.append("INFO: copied ACPI tables")
+        else:
+            log.append("FAIL: /sys/firmware/acpi/tables missing")
     else:
-        log.append("FAIL: /sys/firmware/acpi/tables missing")
+        log.append("SKIP: acpi information skipped at user request")
 
     # lscpu
     run_and_write(log, aw, f"{top_name}/lscpu.txt", ["lscpu"])
@@ -781,7 +827,10 @@ def collect_all(
     )
 
     # Collect networking configuration
-    collect_network(log, aw, top_name)
+    if cfg.network:
+        collect_network(log, aw, top_name)
+    else:
+        log.append("SKIP: network configuration skipped at user request")
 
     # collection log last
     aw.add_text(None, f"{top_name}/collection.log", "\n".join(log) + "\n", stored=False)
@@ -803,6 +852,36 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     ap.add_argument("-o", "--output", help="Output archive path (.zip).")
     ap.add_argument(
+        "--no-acpi",
+        help="Do not include ACPI tables in the debug report",
+        action="store_true",
+        default=False,
+    )
+    ap.add_argument(
+        "--no-dmi",
+        help="Do not include DMI tables in the debug report",
+        action="store_true",
+        default=False,
+    )
+    ap.add_argument(
+        "--no-journal",
+        help="Do not include the systemd journal in the debug report",
+        action="store_true",
+        default=False,
+    )
+    ap.add_argument(
+        "--no-systemd-units",
+        help="Do not include the state of systemd units in the debug report",
+        action="store_true",
+        default=False,
+    )
+    ap.add_argument(
+        "--no-network",
+        help="Do not include network devices or configuration in the debug report",
+        action="store_true",
+        default=False,
+    )
+    ap.add_argument(
         "--name",
         help="Top-level directory name inside archive (defaults to archive base name).",
     )
@@ -811,6 +890,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not is_root():
         print("ERROR: This script must be run as root.", file=sys.stderr)
         return 2
+
+    # Take parsed arguments and make a Config instance specifying what to
+    # collect
+    cfg = Config(
+        acpi=not args.no_acpi,
+        dmi=not args.no_dmi,
+        journal=not args.no_journal,
+        network=not args.no_network,
+        systemctl=not args.no_systemd_units,
+    )
+
+    set_environment()
 
     out_path = (
         Path(args.output).resolve()
@@ -824,7 +915,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     log: List[str] = []
     try:
         aw = ZipArchiveWriter(out_path)
-        collect_all(log, aw, top_name)
+        collect_all(cfg, log, aw, top_name)
         aw.close()
     except Exception as e:
         # Best-effort fatal note
