@@ -1,0 +1,2 @@
+# If anyone runs the tool in the repo, it'll make zip files we don't want added.
+/*.zip
