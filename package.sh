@@ -31,6 +31,11 @@ strip -x "${SCRIPTPATH}/build/bin/lspci"
 install -Dm0755 debug_report.py "${SCRIPTPATH}/build/edera-debug-report"
 
 #
+# Install documentation
+#
+install -Dm0644 README-customer.md "${SCRIPTPATH}/build/README.md"
+
+#
 # Package prefix as tarball
 #
 VERSION=$(git describe --tags)
