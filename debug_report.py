@@ -66,6 +66,7 @@ def stable_env() -> dict:
         env[k] = "C.UTF-8"
     return env
 
+should fail the PR workflow
 
 def set_environment() -> None:
     scriptDir = os.path.dirname(os.path.abspath(__file__))
