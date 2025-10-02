@@ -32,6 +32,7 @@ class Config:
     acpi: bool = True
     dmi: bool = True
     journal: bool = True
+    unit_journal: bool = True
     network: bool = True
     systemctl: bool = True
 
@@ -682,10 +683,10 @@ def collect_all(
     # dmesg
     run_and_write(log, aw, f"{top_name}/dmesg.txt", ["dmesg"])
 
-    # journalctl (current boot) -> zstd -> STORED
-    if cfg.journal:
-        if which("journalctl"):
-            use_zstd = bool(which("zstd"))
+    if which("journalctl"):
+        use_zstd = bool(which("zstd"))
+        if cfg.journal:
+            # journalctl, limited to 40000 lines (current boot) -> zstd -> STORED
             arc = (
                 f"{top_name}/systemd-journal-boot0.json.zst"
                 if use_zstd
@@ -695,14 +696,53 @@ def collect_all(
                 log,
                 aw,
                 arc,
-                ["journalctl", "--system", "-b", "-0", "--output=json"],
+                ["journalctl", "--system", "-n", "40000", "-b", "-0", "--output=json"],
                 pipe_zstd=use_zstd,
                 zstd_level=13,
             )
         else:
-            log.append("FAIL: journalctl not found; skipping journal capture")
+            log.append("SKIP: systemd journal skipped at user request")
+
+        if cfg.unit_journal:
+            # These are services where we want the full log if possible,
+            # because they're very directly relevant to debugging Edera Protect
+            # problems.
+            services = [
+                "protect-cri.service",
+                "protect-daemon.service",
+                "protect-network.service",
+                "protect-orchestrator.service",
+                "protect-preinit.service",
+                "protect-storage.service",
+                "containerd.service",
+                "kubelet.service",
+            ]
+            for service in services:
+                arc = (
+                    f"{top_name}/systemd-journal-unit-{service}.json.zst"
+                    if use_zstd
+                    else f"{top_name}/systemd-journal-unit-{service}.json"
+                )
+                run_and_write(
+                    log,
+                    aw,
+                    arc,
+                    [
+                        "journalctl",
+                        "--system",
+                        "-b",
+                        "-0",
+                        "-u",
+                        service,
+                        "--output=json",
+                    ],
+                    pipe_zstd=use_zstd,
+                    zstd_level=13,
+                )
+        else:
+            log.append("SKIP: systemd unit journal skipped at user request")
     else:
-        log.append("SKIP: systemd journal skipped at user request")
+        log.append("FAIL: journalctl not found; skipping journal capture")
 
     # systemctl list-units
     if cfg.systemctl:
@@ -870,6 +910,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=False,
     )
     ap.add_argument(
+        "--no-unit-journal",
+        help="Do not include the systemd journal for specific units in the debug report",
+        action="store_true",
+        default=False,
+    )
+    ap.add_argument(
         "--no-systemd-units",
         help="Do not include the state of systemd units in the debug report",
         action="store_true",
@@ -897,6 +943,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         acpi=not args.no_acpi,
         dmi=not args.no_dmi,
         journal=not args.no_journal,
+        unit_journal=not args.no_unit_journal,
         network=not args.no_network,
         systemctl=not args.no_systemd_units,
     )
