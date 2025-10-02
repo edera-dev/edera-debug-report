@@ -781,6 +781,15 @@ def collect_all(
                 log.append(
                     "FAIL: Neither 'xl' nor 'protect' found for Xen dom0 collection."
                 )
+
+        # Grab a full dump of xenstore, if possible
+        xenstore_ls_bin = which("xenstore-ls")
+        if xenstore_ls_bin:
+            run_and_write(
+                log, aw, f"{top_name}/xenstore_ls.txt", [xenstore_ls_bin, "-f"]
+            )
+        else:
+            log.append("SKIP: xenstore-ls not found, skipping dump of xenstore state")
     else:
         log.append("INFO: Xen dom0 not detected -> skipping 'xl'/'protect' collectors.")
 
