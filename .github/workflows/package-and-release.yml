@@ -18,7 +18,7 @@ jobs:
     uses: ./.github/workflows/lint.yml
     with:
       python-version: "3.11"
-      paths: "debug_report.py"
+      paths: "edera-debug-report"
 
   build:
     needs: lint

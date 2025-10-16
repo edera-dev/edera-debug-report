@@ -12,7 +12,7 @@ on:
         description: Space-separated paths to check
         required: false
         type: string
-        default: "debug_report.py"
+        default: "edera-debug-report"
 
 permissions:
   contents: read

@@ -28,12 +28,12 @@ strip -x "${SCRIPTPATH}/build/bin/lspci"
 # Install script in prefix
 #
 
-install -Dm0755 debug_report.py "${SCRIPTPATH}/build/edera-debug-report"
+install -Dm0755 edera-debug-report "${SCRIPTPATH}/build/edera-debug-report"
 
 #
 # Install documentation
 #
-install -Dm0644 README-customer.md "${SCRIPTPATH}/build/README.md"
+install -Dm0644 README.md "${SCRIPTPATH}/build/README.md"
 
 #
 # Package prefix as tarball
