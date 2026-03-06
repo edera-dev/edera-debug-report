@@ -97,4 +97,5 @@ jobs:
           set -euxo pipefail
           for f in out/*.tar.gz; do
             echo "::group::Listing $f"
-            tar -tzvf "$f
+            tar -tzvf "$f"
+          done

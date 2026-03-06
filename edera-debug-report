@@ -305,7 +305,7 @@ def _cksum8(buf: bytes) -> int:
     return (-sum(buf)) & 0xFF
 
 
-def _read_bytes(p: Path) -> bytes | None:
+def _read_bytes(p: Path) -> Optional[bytes]:
     try:
         return p.read_bytes()
     except Exception:
