@@ -387,9 +387,13 @@ def run_and_write(
     zstd_level: int = 13,
     stderr_sidecar: bool = True,
 ) -> None:
-    rc, err = aw.add_stream_from_proc(
-        log, arcname, cmd, pipe_zstd=pipe_zstd, zstd_level=zstd_level
-    )
+    try:
+        rc, err = aw.add_stream_from_proc(
+            log, arcname, cmd, pipe_zstd=pipe_zstd, zstd_level=zstd_level
+        )
+    except FileNotFoundError:
+        log.append(f"WARN: {cmd[0]}: not found, skipping")
+        return
     if stderr_sidecar and err.strip():
         aw.add_text(log, arcname + ".stderr.txt", err, stored=False)
     if rc != 0:
@@ -525,13 +529,21 @@ def run_json_then_fallback_text(
     Try a --json ethtool/iproute2 command; on nonzero RC, capture text fallback.
     Writes stderr sidecars when present (for both attempts).
     """
-    rc, err = aw.add_stream_from_proc(log, arc_json, json_cmd)
+    try:
+        rc, err = aw.add_stream_from_proc(log, arc_json, json_cmd)
+    except FileNotFoundError:
+        log.append(f"WARN: {json_cmd[0]}: not found, skipping")
+        return
     if err.strip():
         aw.add_text(log, arc_json + ".stderr.txt", err, stored=False)
     if rc == 0:
         return
     # Fallback to text
-    rc2, err2 = aw.add_stream_from_proc(log, arc_text, text_cmd)
+    try:
+        rc2, err2 = aw.add_stream_from_proc(log, arc_text, text_cmd)
+    except FileNotFoundError:
+        log.append(f"WARN: {text_cmd[0]}: not found, skipping")
+        return
     if err2.strip():
         aw.add_text(log, arc_text + ".stderr.txt", err2, stored=False)
     if rc2 != 0:
