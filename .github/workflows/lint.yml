@@ -7,7 +7,7 @@ on:
         description: Python version for linters
         required: false
         type: string
-        default: "3.11"
+        default: "3.9"
       paths:
         description: Space-separated paths to check
         required: false
