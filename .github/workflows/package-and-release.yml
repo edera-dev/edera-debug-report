@@ -51,3 +51,6 @@ jobs:
           files: ${{ needs.build.outputs.tarball_glob }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  oci:
+    uses: ./.github/workflows/build-oci.yml
