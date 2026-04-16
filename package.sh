@@ -9,13 +9,23 @@ rm -rf "${SCRIPTPATH}/build"
 mkdir -p "${SCRIPTPATH}/build/bin"
 
 #
+# Build statically-linked dmidecode binary
+#
+pushd extern/dmidecode
+git clean -dfx
+git reset --hard HEAD
+make -j$(nproc) dmidecode CC="gcc" CFLAGS="-Os -static -flto" LDFLAGS="-static -flto"
+install -Dm0755 dmidecode "${SCRIPTPATH}/build/bin/dmidecode"
+popd
+
+#
 # Build statically-linked pciutils 'lspci' binary and pci.ids.gz
 #
 
 pushd extern/pciutils
 git clean -dfx
 git reset --hard HEAD
-make -j$(nproc) update-pciids lspci OPT=-Os IDSDIR="./hwdata" LIBKMOD=no DNS=no HWDB=no ZLIB=yes SHARED=no CC="cc -static -flto"
+make -j$(nproc) update-pciids lspci OPT=-Os IDSDIR="./hwdata" LIBKMOD=no DNS=no HWDB=no ZLIB=yes SHARED=no RANLIB=gcc-ranlib AR=gcc-ar CC="gcc -static -flto"
 mkdir hwdata
 ./update-pciids
 install -Dm0755 update-pciids "${SCRIPTPATH}/build/bin/update-pciids"

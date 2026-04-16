@@ -1,3 +1,6 @@
 [submodule "extern/pciutils"]
 	path = extern/pciutils
 	url = https://github.com/pciutils/pciutils.git
+[submodule "extern/dmidecode"]
+	path = extern/dmidecode
+	url = https://git.savannah.nongnu.org/git/dmidecode.git
