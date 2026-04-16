@@ -9,12 +9,12 @@ max_parallel_downloads=8
 EOF
 
 RUN dnf update -y
-RUN dnf install --enablerepo=crb -y gcc gcc-c++ make glibc-devel zlib-devel git glibc-static zlib-static
+RUN dnf install --enablerepo=crb -y gcc gcc-c++ make glibc-devel zlib-devel glibc-static zlib-static
 
 COPY . /workspace
 WORKDIR /workspace
 
-RUN /workspace/package.sh
+RUN /workspace/build.sh
 
 #
 # Create OCI image for Edera Protect Installer
