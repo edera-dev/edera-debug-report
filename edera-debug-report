@@ -1024,6 +1024,7 @@ def collect_all(
                 ["journalctl", "--system", "-n", "40000", "-b", "-0", "--output=json"],
                 pipe_zstd=use_zstd,
                 zstd_level=13,
+                timeout_s=300.0,
             )
         else:
             log.append("SKIP: systemd journal skipped at user request")
@@ -1063,6 +1064,7 @@ def collect_all(
                     ],
                     pipe_zstd=use_zstd,
                     zstd_level=13,
+                    timeout_s=120.0,
                 )
         else:
             log.append("SKIP: systemd unit journal skipped at user request")
@@ -1088,19 +1090,28 @@ def collect_all(
     if detect_xen_dom0(log):
         xl_bin = which("xl")
         if xl_bin:
-            run_and_write(log, aw, f"{top_name}/xl_dmesg.txt", [xl_bin, "dmesg"])
-            run_and_write(log, aw, f"{top_name}/xl_info.txt", [xl_bin, "info"])
+            run_and_write(
+                log, aw, f"{top_name}/xl_dmesg.txt", [xl_bin, "dmesg"], timeout_s=30.0
+            )
+            run_and_write(
+                log, aw, f"{top_name}/xl_info.txt", [xl_bin, "info"], timeout_s=30.0
+            )
         else:
             prot = which("protect")
             if prot:
                 run_and_write(
-                    log, aw, f"{top_name}/hv_console.txt", [prot, "host", "hv-console"]
+                    log,
+                    aw,
+                    f"{top_name}/hv_console.txt",
+                    [prot, "host", "hv-console"],
+                    timeout_s=30.0,
                 )
                 run_and_write(
                     log,
                     aw,
                     f"{top_name}/hv_debug_info.txt",
                     [prot, "host", "hv-debug-info"],
+                    timeout_s=30.0,
                 )
             else:
                 log.append(
@@ -1111,7 +1122,11 @@ def collect_all(
         xenstore_ls_bin = which("xenstore-ls")
         if xenstore_ls_bin:
             run_and_write(
-                log, aw, f"{top_name}/xenstore_ls.txt", [xenstore_ls_bin, "-f"]
+                log,
+                aw,
+                f"{top_name}/xenstore_ls.txt",
+                [xenstore_ls_bin, "-f"],
+                timeout_s=30.0,
             )
         else:
             log.append("SKIP: xenstore-ls not found, skipping dump of xenstore state")
@@ -1123,7 +1138,13 @@ def collect_all(
         dmidecode_bin = which("dmidecode")
         if dmidecode_bin:
             # full dmidecode text (stderr is used for warnings; capture sidecar)
-            run_and_write(log, aw, f"{top_name}/dmidecode.txt", [dmidecode_bin])
+            run_and_write(
+                log,
+                aw,
+                f"{top_name}/dmidecode.txt",
+                [dmidecode_bin],
+                timeout_s=30.0,
+            )
             # dump-bin: needs a filename; use a temp file and add it
             with tempfile.TemporaryDirectory(prefix="dbg-dmi-") as td:
                 tmp = Path(td) / "dmi.dump"
@@ -1132,6 +1153,7 @@ def collect_all(
                     aw,
                     f"{top_name}/dmi-bin.txt",
                     [dmidecode_bin, f"--dump-bin={tmp}"],
+                    timeout_s=30.0,
                 )
                 if tmp.exists():
                     copy_file(log, aw, tmp, f"{top_name}/dmi.dump", stored=False)
@@ -1179,7 +1201,7 @@ def collect_all(
     run_and_write(log, aw, f"{top_name}/free_m.txt", ["free", "-m"])
 
     # lsusb -v
-    run_and_write(log, aw, f"{top_name}/lsusb_v.txt", ["lsusb", "-v"])
+    run_and_write(log, aw, f"{top_name}/lsusb_v.txt", ["lsusb", "-v"], timeout_s=30.0)
 
     # sysctl -a
     run_and_write(log, aw, f"{top_name}/sysctl.txt", ["sysctl", "-a"])
