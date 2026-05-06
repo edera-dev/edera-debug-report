@@ -12,6 +12,7 @@ Notes:
 import argparse
 import datetime as _dt
 import io
+import json
 import os
 import shlex
 import shutil
@@ -36,6 +37,7 @@ class Config:
     unit_journal: bool = True
     network: bool = True
     systemctl: bool = True
+    protect_zone_logs: bool = True
 
 
 # ------------------------ env / basics ------------------------
@@ -879,6 +881,102 @@ def collect_network(
         run_and_write(log, aw, f"{base}/ethtool_i.txt", [etht, "-i", nic])
 
 
+# ------------------------ Edera Protect zone logs ------------------------
+
+
+def collect_protect_zone_logs(
+    log: List[str],
+    aw: ZipArchiveWriter,
+    top_name: str,
+) -> None:
+    """
+    Collect `protect-ctl zone list -o json` and per-zone `protect-ctl zone logs`.
+
+    Both calls are bounded by the in-process timeout helper (10s SIGTERM, then
+    SIGKILL after 1s grace), since protect-daemon being wedged is exactly the
+    kind of failure this report is meant to capture. Output goes under
+    `{top_name}/protect/`. Should run before journal collection so the journal
+    capture includes any activity from these calls.
+    """
+    protect_ctl = which("protect-ctl")
+    if not protect_ctl:
+        log.append("INFO: protect-ctl not found; skipping protect zone log collection")
+        return
+
+    arc_dir = f"{top_name}/protect"
+
+    # zone list -o json: capture stdout in memory so we can both archive it
+    # and parse it for zone IDs.
+    zone_list_arc = f"{arc_dir}/zone-list.json"
+    try:
+        r = run_with_timeout(
+            [protect_ctl, "zone", "list", "-o", "json"],
+            timeout_s=10.0,
+        )
+    except FileNotFoundError:
+        log.append("WARN: protect-ctl: not found, skipping zone log collection")
+        return
+    except Exception as e:
+        log.append(f"FAIL: protect-ctl zone list: {e}")
+        return
+
+    if r.stdout:
+        write_bytes(log, aw, zone_list_arc, r.stdout, stored=False)
+    if r.stderr:
+        aw.add_text(
+            log,
+            zone_list_arc + ".stderr.txt",
+            r.stderr.decode("utf-8", errors="replace"),
+            stored=False,
+        )
+    if r.timed_out:
+        log.append("FAIL: protect-ctl zone list timed out; cannot enumerate zones")
+        return
+    if r.rc != 0:
+        log.append(f"FAIL({r.rc}): protect-ctl zone list; cannot enumerate zones")
+        return
+    if not r.stdout:
+        log.append(
+            "FAIL: protect-ctl zone list produced empty output; cannot enumerate zones"
+        )
+        return
+
+    try:
+        zone_data = json.loads(r.stdout.decode("utf-8", errors="replace"))
+        zones = [z["id"] for z in zone_data]
+    except Exception as e:
+        log.append(f"FAIL: could not parse zone list JSON: {e}")
+        return
+
+    if not zones:
+        log.append("INFO: no zones found")
+        return
+
+    log.append(f"INFO: found {len(zones)} zone(s): {', '.join(zones)}")
+
+    for zone in zones:
+        zone_log_arc = f"{arc_dir}/zone-{zone}.log"
+        try:
+            rc, err, timed_out = aw.add_stream_from_proc(
+                log,
+                zone_log_arc,
+                [protect_ctl, "zone", "logs", zone],
+                timeout_s=10.0,
+                kill_after_s=1.0,
+            )
+        except FileNotFoundError:
+            log.append(
+                f"WARN: protect-ctl not found while collecting zone {zone}; skipping"
+            )
+            continue
+        if err.strip():
+            aw.add_text(log, zone_log_arc + ".stderr.txt", err, stored=False)
+        if timed_out:
+            log.append(f"WARN: zone {zone}: log collection timed out")
+        elif rc != 0:
+            log.append(f"FAIL({rc}): protect-ctl zone logs {zone}")
+
+
 # ------------------------ high-level collection ------------------------
 
 
@@ -902,6 +1000,13 @@ def collect_all(
 
     # dmesg
     run_and_write(log, aw, f"{top_name}/dmesg.txt", ["dmesg"])
+
+    # Edera Protect zone logs: gather BEFORE journal so the journal capture
+    # picks up any activity these calls trigger.
+    if cfg.protect_zone_logs:
+        collect_protect_zone_logs(log, aw, top_name)
+    else:
+        log.append("SKIP: protect zone logs skipped at user request")
 
     if which("journalctl"):
         use_zstd = bool(which("zstd"))
@@ -1157,6 +1262,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=False,
     )
     ap.add_argument(
+        "--no-protect-zone-logs",
+        help="Do not include Edera Protect zone list and per-zone logs in the debug report",
+        action="store_true",
+        default=False,
+    )
+    ap.add_argument(
         "--name",
         help="Top-level directory name inside archive (defaults to archive base name).",
     )
@@ -1175,6 +1286,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         unit_journal=not args.no_unit_journal,
         network=not args.no_network,
         systemctl=not args.no_systemd_units,
+        protect_zone_logs=not args.no_protect_zone_logs,
     )
 
     set_environment()

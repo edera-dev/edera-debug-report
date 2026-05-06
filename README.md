@@ -38,6 +38,7 @@ The archive may include:
 - Kernel logs (`dmesg`), systemd unit list, optional systemd journal
 - Network configuration (interfaces, routes, iptables rules)
 - Edera Protect daemon configuration (`/var/lib/edera/protect/daemon.toml`)
+- Edera Protect zone list and per-zone logs (`protect-ctl zone list`, `protect-ctl zone logs`)
 
 **Please inspect the ZIP contents yourself** to ensure you are comfortable
 with the data before sending it to Edera. You can open it with any ZIP tool.
@@ -46,12 +47,13 @@ Optional Privacy Flags
 -----------------------------------------------------------------------
 You may exclude certain data if desired:
 
-    --no-acpi          Skip ACPI tables
-    --no-dmi           Skip DMI/SMBIOS data
-    --no-journal       Skip systemd journal logs for the whole system
-    --no-network       Skip all network configuration
-    --no-systemd-units Skip 'systemctl list-units` (all unit state)
-    --no-unit-journal  Skip systemd journal logs for Edera-specific systemd units
+    --no-acpi              Skip ACPI tables
+    --no-dmi               Skip DMI/SMBIOS data
+    --no-journal           Skip systemd journal logs for the whole system
+    --no-network           Skip all network configuration
+    --no-protect-zone-logs Skip Edera Protect zone list and per-zone logs
+    --no-systemd-units     Skip 'systemctl list-units` (all unit state)
+    --no-unit-journal      Skip systemd journal logs for Edera-specific systemd units
 
 Example:
 
