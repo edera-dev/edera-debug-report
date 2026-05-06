@@ -55,6 +55,13 @@ def which(cmd: str) -> Optional[str]:
     return shutil.which(cmd)
 
 
+def _progress(msg: str) -> None:
+    """Single-line progress to stderr. When something hangs, the last line
+    printed identifies the offending command."""
+    if os.environ.get("EDR_DEBUG", "0") == "1":
+        print(f"[edr] {msg}", file=sys.stderr, flush=True)
+
+
 def stable_env() -> dict:
     env = os.environ.copy()
     for k in (
@@ -172,6 +179,9 @@ def run_with_timeout(
     """
     _install_signal_forwarders_once()
 
+    cmd_str = shlex.join(cmd)
+    _progress(f"running: {cmd_str}")
+
     p = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -194,12 +204,14 @@ def run_with_timeout(
 
     def _term() -> None:
         timed_out[0] = True
+        _progress(f"timeout ({timeout_s}s): SIGTERM -> {cmd_str}")
         try:
             os.killpg(pgid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
     def _kill() -> None:
+        _progress(f"timeout ({timeout_s + kill_after_s}s): SIGKILL -> {cmd_str}")
         try:
             os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
@@ -322,6 +334,9 @@ class ZipArchiveWriter:
         stdout, which propagates EOF down the pipeline and unblocks the read
         loop here without further intervention.
         """
+        cmd_str = shlex.join(cmd)
+        _progress(f"running: {cmd_str}")
+
         pipeline: List[List[str]] = [cmd]
         stored = False
         if pipe_zstd and which("zstd"):
@@ -365,12 +380,16 @@ class ZipArchiveWriter:
 
             def _term() -> None:
                 timed_out[0] = True
+                _progress(f"timeout ({timeout_s}s): SIGTERM -> {cmd_str}")
                 try:
                     os.killpg(pg, signal.SIGTERM)
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
 
             def _kill() -> None:
+                _progress(
+                    f"timeout ({timeout_s + kill_after_s}s): SIGKILL -> {cmd_str}"
+                )
                 try:
                     os.killpg(pg, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError, OSError):
@@ -1321,6 +1340,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not out_path.name.lower().endswith(".zip"):
         out_path = out_path.with_suffix(".zip")
     top_name = ensure_topdir_name(out_path, args.name)
+
+    print(f"Creating: {out_path}")
 
     log: List[str] = []
     try:
