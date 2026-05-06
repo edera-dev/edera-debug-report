@@ -4,3 +4,7 @@
 
 # Build tree
 /build
+
+# Python junk
+__pycache__
+*.py[co]
