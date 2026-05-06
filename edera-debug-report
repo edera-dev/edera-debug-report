@@ -15,6 +15,7 @@ import io
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,7 @@ import threading
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 # --------------------------- config ---------------------------
 
@@ -77,6 +78,149 @@ def set_environment() -> None:
 
     # Change working directory to script directory
     os.chdir(scriptDir)
+
+
+# ------------------------ subprocess timeout helpers ------------------------
+#
+# This tool runs in possibly-broken environments (a wedged protect-daemon,
+# a stuck hypervisor, a hung xenstored, etc.). To keep collection bounded
+# we run risky commands in their own process group and use a Python-side
+# watchdog (TERM, then KILL after a grace period) to signal the whole
+# group via os.killpg. The grouping matters because tools like protect-ctl
+# may spawn helpers; killing only the parent could leave grandchildren
+# holding the stdout pipe open and hanging our read loop.
+#
+# Side effect of start_new_session=True: the child no longer shares our
+# foreground process group, so terminal-delivered SIGINT/SIGTERM/SIGHUP
+# stop reaching it automatically. We compensate by tracking active
+# child pgids and installing top-level signal handlers that forward to
+# every live group before re-raising default behavior in the parent.
+
+
+_active_pgids: Set[int] = set()
+_active_pgids_lock = threading.Lock()
+_signal_handlers_installed = False
+_orig_signal_handlers: Dict[int, Any] = {}
+
+
+def _signal_forwarder(signum, frame):
+    """Forward SIGINT/SIGTERM/SIGHUP to every tracked child pgid, then
+    restore the prior handler and re-raise so the parent dies normally."""
+    with _active_pgids_lock:
+        pgids = list(_active_pgids)
+    for pgid in pgids:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    prior = _orig_signal_handlers.get(signum, signal.SIG_DFL)
+    try:
+        signal.signal(signum, prior)
+    except (TypeError, ValueError, OSError):
+        signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _install_signal_forwarders_once() -> None:
+    global _signal_handlers_installed
+    if _signal_handlers_installed:
+        return
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            _orig_signal_handlers[sig] = signal.signal(sig, _signal_forwarder)
+        except (ValueError, OSError):
+            # signal.signal is main-thread-only on some platforms; if we
+            # can't install, the rest of the timeout machinery still works.
+            pass
+    _signal_handlers_installed = True
+
+
+def _track_pgid(pgid: int) -> None:
+    with _active_pgids_lock:
+        _active_pgids.add(pgid)
+
+
+def _untrack_pgid(pgid: int) -> None:
+    with _active_pgids_lock:
+        _active_pgids.discard(pgid)
+
+
+@dataclass
+class TimeoutResult:
+    rc: int
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool
+
+
+def run_with_timeout(
+    cmd: List[str],
+    *,
+    timeout_s: float,
+    kill_after_s: float = 1.0,
+    env: Optional[dict] = None,
+) -> TimeoutResult:
+    """
+    Run a command with a SIGTERM-then-SIGKILL watchdog and process-group
+    isolation. Captures stdout and stderr in memory.
+
+    Use this for short, captured-output commands where the producer might
+    be hung talking to a wedged daemon/hypervisor. For streaming output
+    into a ZIP entry, use ZipArchiveWriter.add_stream_from_proc(timeout_s=).
+    """
+    _install_signal_forwarders_once()
+
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env if env is not None else stable_env(),
+        start_new_session=True,
+    )
+
+    try:
+        pgid = os.getpgid(p.pid)
+    except ProcessLookupError:
+        # Child exited before we could read its pgid.
+        stdout, stderr = p.communicate()
+        return TimeoutResult(
+            rc=p.returncode, stdout=stdout or b"", stderr=stderr or b"", timed_out=False
+        )
+
+    _track_pgid(pgid)
+    timed_out = [False]
+
+    def _term() -> None:
+        timed_out[0] = True
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    def _kill() -> None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    term_timer = threading.Timer(timeout_s, _term)
+    kill_timer = threading.Timer(timeout_s + kill_after_s, _kill)
+    term_timer.start()
+    kill_timer.start()
+
+    try:
+        stdout, stderr = p.communicate()
+    finally:
+        term_timer.cancel()
+        kill_timer.cancel()
+        _untrack_pgid(pgid)
+
+    return TimeoutResult(
+        rc=p.returncode,
+        stdout=stdout or b"",
+        stderr=stderr or b"",
+        timed_out=timed_out[0],
+    )
 
 
 # ------------------------ ZIP writer ------------------------
@@ -162,11 +306,19 @@ class ZipArchiveWriter:
         pipe_zstd: bool = False,
         zstd_level: int = 13,
         chunk: int = 1024 * 1024,
-    ) -> Tuple[int, str]:
+        timeout_s: Optional[float] = None,
+        kill_after_s: float = 1.0,
+    ) -> Tuple[int, str, bool]:
         """
         Run a command (optionally piped through zstd) and stream stdout to a ZIP entry.
-        Returns (rc_of_last, combined_stderr_text).
+        Returns (rc_of_last, combined_stderr_text, timed_out).
         Uses DEFLATE unless pipe_zstd=True and zstd is available, in which case the entry is STORED.
+
+        If timeout_s is set, the producer (first pipeline stage) runs in its
+        own session/process group. A watchdog sends SIGTERM at timeout_s and
+        SIGKILL at timeout_s + kill_after_s. Killing the producer closes its
+        stdout, which propagates EOF down the pipeline and unblocks the read
+        loop here without further intervention.
         """
         pipeline: List[List[str]] = [cmd]
         stored = False
@@ -174,21 +326,58 @@ class ZipArchiveWriter:
             pipeline.append(["zstd", f"-{int(zstd_level)}", "-T0", "-c"])
             stored = True  # avoid double-compressing the zstd stream
 
-        # Build the pipeline
+        # Build the pipeline. Only the producer (stage 0) runs in a new
+        # session when a timeout is requested — downstream stages stay in
+        # our session so they die with us on parent SIGINT.
         procs: List[subprocess.Popen] = []
         prev_stdout = None
+        producer_pgid: Optional[int] = None
         for stage, c in enumerate(pipeline):
+            new_session = stage == 0 and timeout_s is not None
             p = subprocess.Popen(
                 c,
                 stdin=prev_stdout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=stable_env(),
+                start_new_session=new_session,
             )
+            if new_session:
+                try:
+                    producer_pgid = os.getpgid(p.pid)
+                    _track_pgid(producer_pgid)
+                except ProcessLookupError:
+                    producer_pgid = None
             if prev_stdout is not None:
                 prev_stdout.close()  # allow SIGPIPE propagation
             prev_stdout = p.stdout  # type: ignore[assignment]
             procs.append(p)
+
+        # Watchdog: TERM-then-KILL the producer's process group on timeout.
+        timed_out = [False]
+        term_timer: Optional[threading.Timer] = None
+        kill_timer: Optional[threading.Timer] = None
+        if timeout_s is not None and producer_pgid is not None:
+            _install_signal_forwarders_once()
+            pg = producer_pgid
+
+            def _term() -> None:
+                timed_out[0] = True
+                try:
+                    os.killpg(pg, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+
+            def _kill() -> None:
+                try:
+                    os.killpg(pg, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+
+            term_timer = threading.Timer(timeout_s, _term)
+            kill_timer = threading.Timer(timeout_s + kill_after_s, _kill)
+            term_timer.start()
+            kill_timer.start()
 
         errs: List[Tuple[str, str]] = []
 
@@ -228,12 +417,20 @@ class ZipArchiveWriter:
 
         # Wait for processes and stderr drain
         rc = 0
-        for p in procs:
-            p.wait()
-            rc = p.returncode  # rc of last will overwrite earlier rc
+        try:
+            for p in procs:
+                p.wait()
+                rc = p.returncode  # rc of last will overwrite earlier rc
 
-        for t in threads:
-            t.join(timeout=1.0)
+            for t in threads:
+                t.join(timeout=1.0)
+        finally:
+            if term_timer is not None:
+                term_timer.cancel()
+            if kill_timer is not None:
+                kill_timer.cancel()
+            if producer_pgid is not None:
+                _untrack_pgid(producer_pgid)
 
         # Build combined stderr (preserve stage order)
         combined_err = ""
@@ -247,15 +444,16 @@ class ZipArchiveWriter:
             for cmd in pipeline:
                 cmds.append(" ".join([shlex.quote(x) for x in cmd]))
             cmd_str = " | ".join(cmds)
+            status = "TIMEOUT" if timed_out[0] else "OK"
             log.append(
-                f"OK: {cmd_str} -> {arcname} ({total} bytes, {'STORED' if stored else 'DEFLATE'})"
+                f"{status}: {cmd_str} -> {arcname} ({total} bytes, {'STORED' if stored else 'DEFLATE'})"
             )
             for i, c in enumerate(pipeline):
                 log.append(
                     f"  {'OK' if procs[i].returncode == 0 else f'FAIL({procs[i].returncode})'}: {' '.join(shlex.quote(x) for x in c)}"
                 )
 
-        return rc, combined_err
+        return rc, combined_err, timed_out[0]
 
 
 # ------------------------ helpers for names/compression ------------------------
@@ -386,17 +584,27 @@ def run_and_write(
     pipe_zstd: bool = False,
     zstd_level: int = 13,
     stderr_sidecar: bool = True,
+    timeout_s: Optional[float] = None,
+    kill_after_s: float = 1.0,
 ) -> None:
     try:
-        rc, err = aw.add_stream_from_proc(
-            log, arcname, cmd, pipe_zstd=pipe_zstd, zstd_level=zstd_level
+        rc, err, timed_out = aw.add_stream_from_proc(
+            log,
+            arcname,
+            cmd,
+            pipe_zstd=pipe_zstd,
+            zstd_level=zstd_level,
+            timeout_s=timeout_s,
+            kill_after_s=kill_after_s,
         )
     except FileNotFoundError:
         log.append(f"WARN: {cmd[0]}: not found, skipping")
         return
     if stderr_sidecar and err.strip():
         aw.add_text(log, arcname + ".stderr.txt", err, stored=False)
-    if rc != 0:
+    if timed_out:
+        log.append(f"TIMEOUT({timeout_s}s): {shlex.join(cmd)} -> {arcname}")
+    elif rc != 0:
         log.append(f"FAIL({rc}): {shlex.join(cmd)} -> {arcname}")
 
 
@@ -530,7 +738,7 @@ def run_json_then_fallback_text(
     Writes stderr sidecars when present (for both attempts).
     """
     try:
-        rc, err = aw.add_stream_from_proc(log, arc_json, json_cmd)
+        rc, err, _ = aw.add_stream_from_proc(log, arc_json, json_cmd)
     except FileNotFoundError:
         log.append(f"WARN: {json_cmd[0]}: not found, skipping")
         return
@@ -540,7 +748,7 @@ def run_json_then_fallback_text(
         return
     # Fallback to text
     try:
-        rc2, err2 = aw.add_stream_from_proc(log, arc_text, text_cmd)
+        rc2, err2, _ = aw.add_stream_from_proc(log, arc_text, text_cmd)
     except FileNotFoundError:
         log.append(f"WARN: {text_cmd[0]}: not found, skipping")
         return
