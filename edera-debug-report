@@ -1031,16 +1031,22 @@ def collect_all(
         use_zstd = bool(which("zstd"))
         if cfg.journal:
             # journalctl, limited to 40000 lines (current boot) -> zstd -> STORED
+            # we capture using journalctl's `export` format, which can be later exported
+            # to the format of your choice and filtered on a different machine
+            # using e.g. `journalctl -o cat < myexport.export` or `journalctl -o json < myexport.export`
+            # or converted back to the full binary format for indexed querying on a remote machine, e.g.
+            # `systemd-journal-remote --output=/tmp/myexport.journal < myexport.export`
+            # `journalctl --file /tmp/myexport.journal --since "2026-01-01" --until "2026-01-02"`
             arc = (
-                f"{top_name}/systemd-journal-boot0.json.zst"
+                f"{top_name}/systemd-journal-boot0.export.zst"
                 if use_zstd
-                else f"{top_name}/systemd-journal-boot0.json"
+                else f"{top_name}/systemd-journal-boot0.export"
             )
             run_and_write(
                 log,
                 aw,
                 arc,
-                ["journalctl", "--system", "-n", "40000", "-b", "-0", "--output=json"],
+                ["journalctl", "--system", "-n", "40000", "-b", "-0", "--output=export"],
                 pipe_zstd=use_zstd,
                 zstd_level=13,
                 timeout_s=300.0,
@@ -1064,9 +1070,9 @@ def collect_all(
             ]
             for service in services:
                 arc = (
-                    f"{top_name}/systemd-journal-unit-{service}.json.zst"
+                    f"{top_name}/systemd-journal-unit-{service}.export.zst"
                     if use_zstd
-                    else f"{top_name}/systemd-journal-unit-{service}.json"
+                    else f"{top_name}/systemd-journal-unit-{service}.export"
                 )
                 run_and_write(
                     log,
@@ -1081,7 +1087,7 @@ def collect_all(
                         "-0",
                         "-u",
                         service,
-                        "--output=json",
+                        "--output=export",
                     ],
                     pipe_zstd=use_zstd,
                     zstd_level=13,
@@ -1095,12 +1101,12 @@ def collect_all(
     # systemctl list-units
     if cfg.systemctl:
         if which("systemctl"):
-            arc = f"{top_name}/systemd-units.json"
+            arc = f"{top_name}/systemd-units.export"
             run_and_write(
                 log,
                 aw,
                 arc,
-                ["systemctl", "--system", "list-units", "--output=json"],
+                ["systemctl", "--system", "list-units", "--output=export"],
             )
         else:
             log.append("FAIL: systemd not found; skipping unit list capture")
