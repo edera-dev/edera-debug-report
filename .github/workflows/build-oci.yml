@@ -45,3 +45,44 @@ jobs:
           TAGS: ghcr.io/edera-dev/${{ matrix.component }}:latest
           COSIGN_EXPERIMENTAL: "true"
         run: cosign sign --yes "${TAGS}@${DIGEST}"
+
+      - name: Build `builder` stage for static-lib versions
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+        with:
+          target: builder
+          platforms: linux/amd64
+          load: true
+          tags: sbom-builder:latest
+      - name: Generate and attest CycloneDX SBOM
+        env:
+          DIGEST: ${{ steps.push-step.outputs.digest }}
+          TAGS: ghcr.io/edera-dev/${{ matrix.component }}:latest
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+
+          # submodule commits/version
+          DMIDECODE_COMMIT="$(git -C extern/dmidecode rev-parse HEAD)"
+          DMIDECODE_VERSION="$(git -C extern/dmidecode describe --tags --always)"
+          PCIUTILS_COMMIT="$(git -C extern/pciutils rev-parse HEAD)"
+          PCIUTILS_VERSION="$(git -C extern/pciutils describe --tags --always)"
+          REPO_COMMIT="$(git rev-parse HEAD)"
+          REPO_VERSION="$(git describe --tags --always)"
+          export DMIDECODE_COMMIT DMIDECODE_VERSION PCIUTILS_COMMIT PCIUTILS_VERSION \
+                 REPO_COMMIT REPO_VERSION
+
+          GLIBC_VERSION="$(docker run --rm sbom-builder:latest rpm -q --qf '%{VERSION}-%{RELEASE}' glibc-static)"
+          ZLIB_VERSION="$(docker run --rm sbom-builder:latest rpm -q --qf '%{VERSION}-%{RELEASE}' zlib-static)"
+          export GLIBC_VERSION ZLIB_VERSION
+
+          python3 generate-sbom.py
+
+          jq -e '.bomFormat == "CycloneDX" and ((.components // []) | length > 0)' \
+            "${COMPONENT}.cdx.json" >/dev/null \
+            || { echo "::error::SBOM for ${COMPONENT} is empty or invalid"; exit 1; }
+          jq '{component: env.COMPONENT, components: (.components | length)}' \
+            "${COMPONENT}.cdx.json"
+
+          cosign attest --yes --type cyclonedx \
+            --predicate "${COMPONENT}.cdx.json" \
+            "${TAGS}@${DIGEST}"
