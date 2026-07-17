@@ -1157,6 +1157,13 @@ def collect_all(
                     [prot, "host", "hv-debug-info"],
                     timeout_s=30.0,
                 )
+                run_and_write(
+                    log,
+                    aw,
+                    f"{top_name}/hv_zone_details.txt",
+                    [prot, "host", "hv-zone-details", "-o", "json"],
+                    timeout_s=30.0,
+                )
             else:
                 log.append(
                     "FAIL: Neither 'xl' nor 'protect' found for Xen dom0 collection."
