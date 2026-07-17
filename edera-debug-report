@@ -55,6 +55,20 @@ def which(cmd: str) -> Optional[str]:
     return shutil.which(cmd)
 
 
+_protect_cli: Optional[str] = None
+_protect_cli_resolved = False
+
+
+def which_protect() -> Optional[str]:
+    """Resolve the Edera CLI, memoized. Full retail installs ship it as
+    `protect`; dev machines typically have `protect-ctl`. Same tool."""
+    global _protect_cli, _protect_cli_resolved
+    if not _protect_cli_resolved:
+        _protect_cli = which("protect") or which("protect-ctl")
+        _protect_cli_resolved = True
+    return _protect_cli
+
+
 def _progress(msg: str) -> None:
     """Single-line progress to stderr. When something hangs, the last line
     printed identifies the offending command."""
@@ -917,9 +931,11 @@ def collect_protect_zone_logs(
     `{top_name}/protect/`. Should run before journal collection so the journal
     capture includes any activity from these calls.
     """
-    protect_ctl = which("protect-ctl")
+    protect_ctl = which_protect()
     if not protect_ctl:
-        log.append("INFO: protect-ctl not found; skipping protect zone log collection")
+        log.append(
+            "INFO: protect/protect-ctl not found; skipping protect zone log collection"
+        )
         return
 
     arc_dir = f"{top_name}/protect"
@@ -1141,7 +1157,7 @@ def collect_all(
                 log, aw, f"{top_name}/xl_info.txt", [xl_bin, "info"], timeout_s=30.0
             )
         else:
-            prot = which("protect")
+            prot = which_protect()
             if prot:
                 run_and_write(
                     log,
