@@ -1067,12 +1067,21 @@ def collect_all(
             # because they're very directly relevant to debugging Edera Protect
             # problems.
             services = [
+                # Edera services, current shipping daemons
+                "kube-spdy-proxy.service",
                 "protect-cri.service",
                 "protect-daemon.service",
+                "protect-gpu-scrub.service",
+                "protect-meminfo.service",
+                "protect-monitor.service",
                 "protect-network.service",
-                "protect-orchestrator.service",
                 "protect-preinit.service",
                 "protect-storage.service",
+                "xenstored.service",
+                # Edera services, deprecated but may still be present on older
+                # hosts
+                "protect-orchestrator.service",
+                # Non-Edera services, specific to Kubernetes
                 "containerd.service",
                 "kubelet.service",
             ]
