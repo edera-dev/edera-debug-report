@@ -39,6 +39,8 @@ The archive may include:
 - Network configuration (interfaces, routes, iptables rules)
 - Edera Protect daemon configuration (`/var/lib/edera/protect/daemon.toml`)
 - Edera Protect zone list and per-zone logs (`protect-ctl zone list`, `protect-ctl zone logs`)
+- containerd/containerd-shim state: shim daemon log (`/tmp/edera-shim-daemon.log`),
+  containerd config, and a live snapshot of containers/tasks (`ctr`, `crictl`)
 
 **Please inspect the ZIP contents yourself** to ensure you are comfortable
 with the data before sending it to Edera. You can open it with any ZIP tool.
@@ -48,6 +50,7 @@ Optional Privacy Flags
 You may exclude certain data if desired:
 
     --no-acpi              Skip ACPI tables
+    --no-containerd        Skip containerd/containerd-shim state (shim log, config, container/task listing)
     --no-dmi               Skip DMI/SMBIOS data
     --no-journal           Skip systemd journal logs for the whole system
     --no-network           Skip all network configuration

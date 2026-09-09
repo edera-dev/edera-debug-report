@@ -38,6 +38,7 @@ class Config:
     network: bool = True
     systemctl: bool = True
     protect_zone_logs: bool = True
+    containerd: bool = True
 
 
 # ------------------------ env / basics ------------------------
@@ -1012,6 +1013,80 @@ def collect_protect_zone_logs(
             log.append(f"FAIL({rc}): protect-ctl zone logs {zone}")
 
 
+def collect_containerd(
+    log: List[str],
+    aw: ZipArchiveWriter,
+    top_name: str,
+) -> None:
+    arc_dir = f"{top_name}/containerd"
+
+    shim_log = Path("/tmp/edera-shim-daemon.log")
+    if shim_log.exists():
+        copy_file(log, aw, shim_log, f"{arc_dir}/edera-shim-daemon.log")
+    else:
+        log.append("INFO: /tmp/edera-shim-daemon.log not present; skipping shim log")
+
+    copy_file(log, aw, Path("/etc/containerd/config.toml"), f"{arc_dir}/config.toml")
+
+    containerd_bin = which("containerd")
+    if containerd_bin:
+        run_and_write(
+            log,
+            aw,
+            f"{arc_dir}/containerd_version.txt",
+            [containerd_bin, "--version"],
+        )
+        run_and_write(
+            log,
+            aw,
+            f"{arc_dir}/containerd_config_dump.toml",
+            [containerd_bin, "config", "dump"],
+            timeout_s=30.0,
+        )
+    else:
+        log.append("INFO: containerd not found in PATH; skipping version/config dump")
+
+    ctr_bin = which("ctr")
+    if ctr_bin:
+        for ns in ("k8s.io", "default"):
+            run_and_write(
+                log,
+                aw,
+                f"{arc_dir}/ctr_{ns}_containers.txt",
+                [ctr_bin, "-n", ns, "containers", "list"],
+                timeout_s=15.0,
+            )
+            run_and_write(
+                log,
+                aw,
+                f"{arc_dir}/ctr_{ns}_tasks.txt",
+                [ctr_bin, "-n", ns, "tasks", "list"],
+                timeout_s=15.0,
+            )
+    else:
+        log.append(
+            "INFO: ctr not found in PATH; skipping containerd container/task listing"
+        )
+
+    crictl_bin = which("crictl")
+    if crictl_bin:
+        run_and_write(
+            log, aw, f"{arc_dir}/crictl_info.txt", [crictl_bin, "info"], timeout_s=15.0
+        )
+        run_and_write(
+            log, aw, f"{arc_dir}/crictl_pods.txt", [crictl_bin, "pods"], timeout_s=15.0
+        )
+        run_and_write(
+            log,
+            aw,
+            f"{arc_dir}/crictl_ps.txt",
+            [crictl_bin, "ps", "-a"],
+            timeout_s=15.0,
+        )
+    else:
+        log.append("INFO: crictl not found in PATH; skipping CRI listing")
+
+
 # ------------------------ high-level collection ------------------------
 
 
@@ -1042,6 +1117,11 @@ def collect_all(
         collect_protect_zone_logs(log, aw, top_name)
     else:
         log.append("SKIP: protect zone logs skipped at user request")
+
+    if cfg.containerd:
+        collect_containerd(log, aw, top_name)
+    else:
+        log.append("SKIP: containerd information skipped at user request")
 
     if which("journalctl"):
         use_zstd = bool(which("zstd"))
@@ -1357,6 +1437,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=False,
     )
     ap.add_argument(
+        "--no-containerd",
+        help="Do not include containerd/containerd-shim state (shim log, config, container/task listing) in the debug report",
+        action="store_true",
+        default=False,
+    )
+    ap.add_argument(
         "--name",
         help="Top-level directory name inside archive (defaults to archive base name).",
     )
@@ -1376,6 +1462,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         network=not args.no_network,
         systemctl=not args.no_systemd_units,
         protect_zone_logs=not args.no_protect_zone_logs,
+        containerd=not args.no_containerd,
     )
 
     set_environment()
